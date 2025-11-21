@@ -49,6 +49,12 @@
             </svg>
         );
 
+        const Minus = () => (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+        );
+
         const Trash = () => (
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -87,6 +93,14 @@
             </svg>
         );
 
+        const Package = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+        );
+
         function LoginPage({ onLogin }) {
             const [username, setUsername] = useState('');
             const [password, setPassword] = useState('');
@@ -94,7 +108,7 @@
 
             const handleSubmit = (e) => {
                 e.preventDefault();
-                if (username === 'Hard Hat Cafe' && password === 'Cafessap1!') {
+                if (username.toLowerCase() === 'hard hat cafe' && password === 'Cafessap1!') {
                     onLogin();
                 } else {
                     setError('Invalid username or password');
@@ -164,13 +178,16 @@
                 daysBefore: 7,
                 publicKey: '',
                 serviceId: '',
-                templateId: ''
+                templateId: '',
+                automationEnabled: false,
+                lastCheckDate: null
             });
             const [newEmail, setNewEmail] = useState('');
-            const [newItem, setNewItem] = useState({ name: '', expiryDate: '', category: '' });
+            const [newItem, setNewItem] = useState({ name: '', expiryDate: '', category: '', quantity: 1 });
             const [loading, setLoading] = useState(true);
             const [emailStatus, setEmailStatus] = useState('');
             const [setupComplete, setSetupComplete] = useState(false);
+            const [syncStatus, setSyncStatus] = useState('');
 
             useEffect(() => {
                 const loggedIn = localStorage.getItem('isLoggedIn');
@@ -188,6 +205,12 @@
                 }
             }, [emailConfig]);
 
+            useEffect(() => {
+                if (isLoggedIn && emailConfig.automationEnabled) {
+                    checkAndSendAutomatedEmails();
+                }
+            }, [isLoggedIn]);
+
             const handleLogin = () => {
                 localStorage.setItem('isLoggedIn', 'true');
                 setIsLoggedIn(true);
@@ -199,25 +222,39 @@
                 setIsLoggedIn(false);
             };
 
-            const loadData = () => {
+            const loadData = async () => {
+                setSyncStatus('Loading...');
                 try {
-                    const savedItems = localStorage.getItem('inventory-items');
-                    const savedConfig = localStorage.getItem('email-config');
+                    const itemsResult = await window.storage.get('inventory-items');
+                    const configResult = await window.storage.get('email-config');
                     
-                    if (savedItems) setItems(JSON.parse(savedItems));
-                    if (savedConfig) setEmailConfig(JSON.parse(savedConfig));
+                    if (itemsResult?.value) {
+                        setItems(JSON.parse(itemsResult.value));
+                    }
+                    if (configResult?.value) {
+                        setEmailConfig(JSON.parse(configResult.value));
+                    }
+                    setSyncStatus('✅ Synced');
+                    setTimeout(() => setSyncStatus(''), 2000);
                 } catch (error) {
-                    console.log('First time setup');
+                    console.log('First time setup or sync error:', error);
+                    setSyncStatus('⚠️ Sync failed');
+                    setTimeout(() => setSyncStatus(''), 3000);
                 }
                 setLoading(false);
             };
 
-            const saveData = (newItems, newConfig) => {
+            const saveData = async (newItems, newConfig) => {
+                setSyncStatus('Syncing...');
                 try {
-                    localStorage.setItem('inventory-items', JSON.stringify(newItems || items));
-                    localStorage.setItem('email-config', JSON.stringify(newConfig || emailConfig));
+                    await window.storage.set('inventory-items', JSON.stringify(newItems || items));
+                    await window.storage.set('email-config', JSON.stringify(newConfig || emailConfig));
+                    setSyncStatus('✅ Synced');
+                    setTimeout(() => setSyncStatus(''), 2000);
                 } catch (error) {
                     console.error('Error saving data:', error);
+                    setSyncStatus('❌ Sync failed');
+                    setTimeout(() => setSyncStatus(''), 3000);
                 }
             };
 
@@ -240,11 +277,29 @@
 
             const addItem = () => {
                 if (newItem.name && newItem.expiryDate) {
-                    const updatedItems = [...items, { ...newItem, id: Date.now(), addedDate: new Date().toISOString() }];
+                    const updatedItems = [...items, { 
+                        ...newItem, 
+                        id: Date.now(), 
+                        addedDate: new Date().toISOString(),
+                        quantity: parseInt(newItem.quantity) || 1,
+                        lastEmailSent: null
+                    }];
                     setItems(updatedItems);
                     saveData(updatedItems, emailConfig);
-                    setNewItem({ name: '', expiryDate: '', category: '' });
+                    setNewItem({ name: '', expiryDate: '', category: '', quantity: 1 });
                 }
+            };
+
+            const updateItemQuantity = (id, change) => {
+                const updatedItems = items.map(item => {
+                    if (item.id === id) {
+                        const newQuantity = Math.max(0, (item.quantity || 0) + change);
+                        return { ...item, quantity: newQuantity };
+                    }
+                    return item;
+                });
+                setItems(updatedItems);
+                saveData(updatedItems, emailConfig);
             };
 
             const deleteItem = (id) => {
@@ -269,7 +324,9 @@
                             name: row.Name || row.name || row.Item || row.item || '',
                             expiryDate: row['Expiry Date'] || row.expiryDate || row.expiry || row.Expiry || '',
                             category: row.Category || row.category || '',
-                            addedDate: new Date().toISOString()
+                            quantity: parseInt(row.Quantity || row.quantity) || 1,
+                            addedDate: new Date().toISOString(),
+                            lastEmailSent: null
                         })).filter(item => item.name && item.expiryDate);
 
                         const updatedItems = [...items, ...importedItems];
@@ -286,6 +343,7 @@
                     Name: item.name,
                     'Expiry Date': item.expiryDate,
                     Category: item.category,
+                    Quantity: item.quantity || 0,
                     'Days Until Expiry': getDaysUntilExpiry(item.expiryDate)
                 })));
                 const wb = XLSX.utils.book_new();
@@ -320,95 +378,148 @@
                 saveData(items, updated);
             };
 
-            const generateEmailAlerts = () => {
-                const alerts = items.map(item => {
-                    const daysUntil = getDaysUntilExpiry(item.expiryDate);
-                    const alert = getAlertStatus(item);
-                    return { ...item, daysUntil, alert: alert.status };
-                }).filter(item => ['expired', 'critical', 'warning', 'notice'].includes(item.alert));
-
-                return alerts;
+            const shouldSendEmailForItem = (item) => {
+                const daysUntil = getDaysUntilExpiry(item.expiryDate);
+                const monthsInDays = emailConfig.monthsBefore * 30;
+                const weeksInDays = emailConfig.weeksBefore * 7;
+                
+                if (daysUntil < 0 || 
+                    daysUntil === emailConfig.daysBefore || 
+                    daysUntil === weeksInDays || 
+                    daysUntil === monthsInDays) {
+                    
+                    const lastSent = item.lastEmailSent ? new Date(item.lastEmailSent) : null;
+                    const now = new Date();
+                    const daysSinceLastEmail = lastSent ? Math.floor((now - lastSent) / (1000 * 60 * 60 * 24)) : 999;
+                    
+                    return daysSinceLastEmail >= 7;
+                }
+                return false;
             };
 
-            const sendEmailAlert = async () => {
-                if (!emailConfig.publicKey || !emailConfig.serviceId || !emailConfig.templateId) {
-                    alert('Please complete EmailJS setup first!');
+            const checkAndSendAutomatedEmails = async () => {
+                if (!emailConfig.automationEnabled || !setupComplete || emailConfig.emails.length === 0) {
                     return;
                 }
 
-                if (emailConfig.emails.length === 0) {
-                    alert('Please add at least one email recipient!');
+                const now = new Date();
+                const lastCheck = emailConfig.lastCheckDate ? new Date(emailConfig.lastCheckDate) : null;
+                const hoursSinceCheck = lastCheck ? (now - lastCheck) / (1000 * 60 * 60) : 999;
+
+                if (hoursSinceCheck < 24) {
                     return;
                 }
 
-                const alerts = generateEmailAlerts();
-                
-                if (alerts.length === 0) {
-                    setEmailStatus('No items require alerts at this time!');
+                const itemsToEmail = items.filter(item => shouldSendEmailForItem(item));
+
+                if (itemsToEmail.length === 0) {
+                    const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
+                    setEmailConfig(updated);
+                    saveData(items, updated);
                     return;
                 }
-
-                setEmailStatus('Sending emails...');
 
                 try {
                     emailjs.init(emailConfig.publicKey);
 
-                    const emailContent = alerts.map(item => 
-                        `• ${item.name}: ${item.daysUntil < 0 ? 'EXPIRED' : `Expires in ${item.daysUntil} days`} (${item.expiryDate})`
-                    ).join('\n');
+                    for (const item of itemsToEmail) {
+                        const daysUntil = getDaysUntilExpiry(item.expiryDate);
+                        
+                        let urgentText = '';
+                        if (daysUntil < 0) {
+                            urgentText = 'EXPIRED';
+                        } else if (daysUntil === 0) {
+                            urgentText = 'expires TODAY';
+                        } else if (daysUntil === 1) {
+                            urgentText = 'expires TOMORROW';
+                        } else {
+                            urgentText = `expires in ${daysUntil} days`;
+                        }
 
-                    const mostUrgent = alerts.reduce((prev, current) => {
-                        return (current.daysUntil < prev.daysUntil) ? current : prev;
-                    });
+                        const templateParams = {
+                            item_name: item.name,
+                            expiry_date: item.expiryDate,
+                            days_until: daysUntil,
+                            urgent_text: urgentText,
+                            quantity: item.quantity || 0,
+                            category: item.category || 'N/A',
+                            alert_date: new Date().toLocaleDateString()
+                        };
 
+                        for (const email of emailConfig.emails) {
+                            try {
+                                await emailjs.send(
+                                    emailConfig.serviceId,
+                                    emailConfig.templateId,
+                                    { ...templateParams, to_email: email }
+                                );
+                            } catch (error) {
+                                console.error(`Failed to send to ${email}:`, error);
+                            }
+                        }
+
+                        const updatedItems = items.map(i => 
+                            i.id === item.id ? { ...i, lastEmailSent: now.toISOString() } : i
+                        );
+                        setItems(updatedItems);
+                        await saveData(updatedItems, emailConfig);
+                    }
+
+                    const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
+                    setEmailConfig(updated);
+                    await saveData(items, updated);
+
+                } catch (error) {
+                    console.error('Automated email error:', error);
+                }
+            };
+
+            const sendManualTestEmail = async (item) => {
+                if (!setupComplete || emailConfig.emails.length === 0) {
+                    alert('Please complete setup first!');
+                    return;
+                }
+
+                setEmailStatus(`Sending email for ${item.name}...`);
+
+                try {
+                    emailjs.init(emailConfig.publicKey);
+
+                    const daysUntil = getDaysUntilExpiry(item.expiryDate);
                     let urgentText = '';
-                    if (mostUrgent.daysUntil < 0) {
-                        urgentText = `${mostUrgent.name} EXPIRED`;
-                    } else if (mostUrgent.daysUntil === 0) {
-                        urgentText = `${mostUrgent.name} expires TODAY`;
-                    } else if (mostUrgent.daysUntil === 1) {
-                        urgentText = `${mostUrgent.name} expires TOMORROW`;
+                    if (daysUntil < 0) {
+                        urgentText = 'EXPIRED';
+                    } else if (daysUntil === 0) {
+                        urgentText = 'expires TODAY';
+                    } else if (daysUntil === 1) {
+                        urgentText = 'expires TOMORROW';
                     } else {
-                        urgentText = `${mostUrgent.name} expires in ${mostUrgent.daysUntil} days`;
+                        urgentText = `expires in ${daysUntil} days`;
                     }
 
                     const templateParams = {
-                        alert_date: new Date().toLocaleDateString(),
-                        alert_count: alerts.length,
-                        items_list: emailContent,
-                        critical_count: alerts.filter(a => a.alert === 'critical' || a.alert === 'expired').length,
-                        warning_count: alerts.filter(a => a.alert === 'warning').length,
-                        notice_count: alerts.filter(a => a.alert === 'notice').length,
-                        urgent_item: urgentText,
-                        most_urgent_days: mostUrgent.daysUntil
+                        item_name: item.name,
+                        expiry_date: item.expiryDate,
+                        days_until: daysUntil,
+                        urgent_text: urgentText,
+                        quantity: item.quantity || 0,
+                        category: item.category || 'N/A',
+                        alert_date: new Date().toLocaleDateString()
                     };
 
-                    let successCount = 0;
-                    let failCount = 0;
-
                     for (const email of emailConfig.emails) {
-                        try {
-                            await emailjs.send(
-                                emailConfig.serviceId,
-                                emailConfig.templateId,
-                                { ...templateParams, to_email: email }
-                            );
-                            successCount++;
-                        } catch (error) {
-                            console.error(`Failed to send to ${email}:`, error);
-                            failCount++;
-                        }
+                        await emailjs.send(
+                            emailConfig.serviceId,
+                            emailConfig.templateId,
+                            { ...templateParams, to_email: email }
+                        );
                     }
 
-                    if (failCount === 0) {
-                        setEmailStatus(`✅ Successfully sent to ${successCount} recipient(s)!`);
-                    } else {
-                        setEmailStatus(`⚠️ Sent to ${successCount}, failed: ${failCount}`);
-                    }
+                    setEmailStatus(`✅ Email sent for ${item.name}!`);
                     setTimeout(() => setEmailStatus(''), 3000);
                 } catch (error) {
                     console.error('Email error:', error);
-                    setEmailStatus('❌ Failed to send emails. Check your EmailJS settings.');
+                    setEmailStatus('❌ Failed to send email');
                 }
             };
 
@@ -419,7 +530,6 @@
             if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
             const sortedItems = [...items].sort((a, b) => getDaysUntilExpiry(a.expiryDate) - getDaysUntilExpiry(b.expiryDate));
-            const alertItems = generateEmailAlerts();
 
             return (
                 <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
@@ -430,7 +540,7 @@
                                     <Calendar />
                                     Inventory Expiry Tracker
                                 </h1>
-                                <p className="text-gray-600">Automated email alerts for expiring items</p>
+                                <p className="text-gray-600">Automated weekly email alerts • {syncStatus || 'Cloud synced'}</p>
                             </div>
                             <button
                                 onClick={handleLogout}
@@ -473,7 +583,7 @@
                                                 Add
                                             </button>
                                         </div>
-                                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                                        <div className="space-y-2 max-h-32 overflow-y-auto">
                                             {emailConfig.emails.map((email, idx) => (
                                                 <div key={idx} className="flex items-center justify-between bg-gray-100 px-3 py-2 rounded">
                                                     <span className="text-sm">{email}</span>
@@ -548,16 +658,21 @@
                                         </div>
                                     </div>
 
-                                    <button
-                                        onClick={sendEmailAlert}
-                                        className={`w-full ${setupComplete && emailConfig.emails.length > 0 ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-400'} text-white px-4 py-2 rounded-md transition flex items-center justify-center gap-2`}
-                                        disabled={!setupComplete || emailConfig.emails.length === 0}
-                                    >
-                                        <Mail />
-                                        Send to {emailConfig.emails.length} Recipient(s) ({alertItems.length} items)
-                                    </button>
+                                    <div className="border-t pt-4">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={emailConfig.automationEnabled}
+                                                onChange={(e) => updateEmailConfig('automationEnabled', e.target.checked)}
+                                                className="w-5 h-5 text-indigo-600 rounded"
+                                            />
+                                            <span className="font-semibold text-gray-800">Enable Automated Weekly Emails</span>
+                                        </label>
+                                        <p className="text-xs text-gray-600 mt-1 ml-7">Automatically sends individual emails when items reach threshold dates (checked once per day)</p>
+                                    </div>
+
                                     {emailStatus && (
-                                        <div className="text-center text-sm font-medium text-gray-700">
+                                        <div className="text-center text-sm font-medium text-gray-700 bg-blue-50 p-2 rounded">
                                             {emailStatus}
                                         </div>
                                     )}
@@ -590,6 +705,17 @@
                                         className="w-full px-3 py-2 border border-gray-300 rounded-md"
                                         placeholder="Category (optional)"
                                     />
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Initial Quantity</label>
+                                        <input
+                                            type="number"
+                                            value={newItem.quantity}
+                                            onChange={(e) => setNewItem({ ...newItem, quantity: e.target.value })}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                            placeholder="Quantity"
+                                            min="0"
+                                        />
+                                    </div>
                                     <div className="flex gap-2">
                                         <button
                                             onClick={addItem}
@@ -633,28 +759,58 @@
                                         return (
                                             <div
                                                 key={item.id}
-                                                className={`${alert.color} border-2 rounded-lg p-4 flex justify-between items-center`}
+                                                className={`${alert.color} border-2 rounded-lg p-4`}
                                             >
-                                                <div className="flex-1">
-                                                    <h3 className="font-semibold text-lg text-gray-800">{item.name}</h3>
-                                                    <div className="flex gap-4 text-sm mt-1">
-                                                        <span className="text-gray-600">Expires: {item.expiryDate}</span>
-                                                        {item.category && <span className="text-gray-600">Category: {item.category}</span>}
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <div className="flex-1">
+                                                        <h3 className="font-semibold text-lg text-gray-800">{item.name}</h3>
+                                                        <div className="flex gap-4 text-sm mt-1">
+                                                            <span className="text-gray-600">Expires: {item.expiryDate}</span>
+                                                            {item.category && <span className="text-gray-600">Category: {item.category}</span>}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-4">
+                                                        <div className={`${alert.textColor} font-bold text-right`}>
+                                                            {daysUntil < 0 ? (
+                                                                <span>EXPIRED</span>
+                                                            ) : (
+                                                                <span>{daysUntil} days left</span>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => deleteItem(item.id)}
+                                                            className="text-red-600 hover:text-red-800 transition"
+                                                        >
+                                                            <Trash />
+                                                        </button>
                                                     </div>
                                                 </div>
-                                                <div className="flex items-center gap-4">
-                                                    <div className={`${alert.textColor} font-bold text-right`}>
-                                                        {daysUntil < 0 ? (
-                                                            <span>EXPIRED</span>
-                                                        ) : (
-                                                            <span>{daysUntil} days left</span>
-                                                        )}
+                                                <div className="flex items-center justify-between pt-3 border-t border-gray-300">
+                                                    <div className="flex items-center gap-3">
+                                                        <Package />
+                                                        <span className="text-sm font-medium text-gray-700">Quantity:</span>
+                                                        <div className="flex items-center gap-2 bg-white rounded-md px-3 py-1 border border-gray-300">
+                                                            <button
+                                                                onClick={() => updateItemQuantity(item.id, -1)}
+                                                                className="text-red-600 hover:text-red-800 transition"
+                                                            >
+                                                                <Minus />
+                                                            </button>
+                                                            <span className="font-bold text-lg min-w-[40px] text-center">{item.quantity || 0}</span>
+                                                            <button
+                                                                onClick={() => updateItemQuantity(item.id, 1)}
+                                                                className="text-green-600 hover:text-green-800 transition"
+                                                            >
+                                                                <Plus />
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                     <button
-                                                        onClick={() => deleteItem(item.id)}
-                                                        className="text-red-600 hover:text-red-800 transition"
+                                                        onClick={() => sendManualTestEmail(item)}
+                                                        className="bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 transition text-sm flex items-center gap-1"
                                                     >
-                                                        <Trash />
+                                                        <Mail />
+                                                        Test Email
                                                     </button>
                                                 </div>
                                             </div>
