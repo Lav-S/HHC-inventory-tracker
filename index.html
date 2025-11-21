@@ -10,12 +10,18 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
     <div id="root"></div>
     
     <script type="text/babel">
         const { useState, useEffect } = React;
+
+        // Supabase Configuration - REPLACE WITH YOUR OWN VALUES
+        const SUPABASE_URL = 'https://vuwyvwldidjibitrmnje.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_3bB0s-3OQYHDz346IUnXVA_IXUSe9VN';
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         // Icons
         const Calendar = () => (
@@ -194,7 +200,7 @@
                 const loggedIn = localStorage.getItem('isLoggedIn');
                 if (loggedIn === 'true') {
                     setIsLoggedIn(true);
-                    loadData();
+                    loadDataFromSupabase();
                 } else {
                     setLoading(false);
                 }
@@ -215,7 +221,8 @@
             const handleLogin = () => {
                 localStorage.setItem('isLoggedIn', 'true');
                 setIsLoggedIn(true);
-                loadData();
+                setShowConfig(false);
+                loadDataFromSupabase();
             };
 
             const handleLogout = () => {
@@ -223,37 +230,127 @@
                 setIsLoggedIn(false);
             };
 
-            const loadData = async () => {
+            const loadDataFromSupabase = async () => {
                 setSyncStatus('Loading...');
                 try {
-                    const itemsResult = await window.storage.get('inventory-items');
-                    const configResult = await window.storage.get('email-config');
-                    
-                    if (itemsResult?.value) {
-                        setItems(JSON.parse(itemsResult.value));
+                    // Load items
+                    const { data: itemsData, error: itemsError } = await supabase
+                        .from('inventory_items')
+                        .select('*')
+                        .order('expiry_date', { ascending: true });
+
+                    if (itemsError && itemsError.code !== 'PGRST116') {
+                        throw itemsError;
                     }
-                    if (configResult?.value) {
-                        setEmailConfig(JSON.parse(configResult.value));
+
+                    if (itemsData && itemsData.length > 0) {
+                        const loadedItems = itemsData.map(item => ({
+                            id: item.id,
+                            name: item.name,
+                            expiryDate: item.expiry_date,
+                            category: item.category || '',
+                            quantity: item.quantity || 0,
+                            addedDate: item.added_date,
+                            lastEmailSent: item.last_email_sent
+                        }));
+                        setItems(loadedItems);
                     }
+
+                    // Load email config
+                    const { data: configData, error: configError } = await supabase
+                        .from('email_config')
+                        .select('*')
+                        .eq('id', 1)
+                        .single();
+
+                    if (configError && configError.code !== 'PGRST116') {
+                        console.log('Config error:', configError);
+                    }
+
+                    if (configData) {
+                        setEmailConfig({
+                            emails: configData.emails || [],
+                            monthsBefore: configData.months_before || 6,
+                            weeksBefore: configData.weeks_before || 2,
+                            daysBefore: configData.days_before || 7,
+                            publicKey: configData.public_key || '',
+                            serviceId: configData.service_id || '',
+                            templateId: configData.template_id || '',
+                            automationEnabled: configData.automation_enabled || false,
+                            lastCheckDate: configData.last_check_date
+                        });
+                    }
+
                     setSyncStatus('✅ Synced');
                     setTimeout(() => setSyncStatus(''), 2000);
                 } catch (error) {
-                    console.log('First time setup or sync error:', error);
-                    setSyncStatus('⚠️ Sync failed');
-                    setTimeout(() => setSyncStatus(''), 3000);
+                    console.error('Load error:', error);
+                    setSyncStatus('⚠️ Sync failed - Check Supabase setup');
+                    setTimeout(() => setSyncStatus(''), 5000);
                 }
                 setLoading(false);
             };
 
-            const saveData = async (newItems, newConfig) => {
+            const saveItemsToSupabase = async (itemsToSave) => {
                 setSyncStatus('Syncing...');
                 try {
-                    await window.storage.set('inventory-items', JSON.stringify(newItems || items));
-                    await window.storage.set('email-config', JSON.stringify(newConfig || emailConfig));
+                    // Delete all existing items
+                    await supabase.from('inventory_items').delete().neq('id', 0);
+
+                    // Insert new items
+                    if (itemsToSave.length > 0) {
+                        const itemsForDb = itemsToSave.map(item => ({
+                            id: item.id,
+                            name: item.name,
+                            expiry_date: item.expiryDate,
+                            category: item.category || '',
+                            quantity: item.quantity || 0,
+                            added_date: item.addedDate,
+                            last_email_sent: item.lastEmailSent
+                        }));
+
+                        const { error } = await supabase
+                            .from('inventory_items')
+                            .insert(itemsForDb);
+
+                        if (error) throw error;
+                    }
+
                     setSyncStatus('✅ Synced');
                     setTimeout(() => setSyncStatus(''), 2000);
                 } catch (error) {
-                    console.error('Error saving data:', error);
+                    console.error('Save items error:', error);
+                    setSyncStatus('❌ Sync failed');
+                    setTimeout(() => setSyncStatus(''), 3000);
+                }
+            };
+
+            const saveConfigToSupabase = async (config) => {
+                setSyncStatus('Syncing...');
+                try {
+                    const configForDb = {
+                        id: 1,
+                        emails: config.emails,
+                        months_before: config.monthsBefore,
+                        weeks_before: config.weeksBefore,
+                        days_before: config.daysBefore,
+                        public_key: config.publicKey,
+                        service_id: config.serviceId,
+                        template_id: config.templateId,
+                        automation_enabled: config.automationEnabled,
+                        last_check_date: config.lastCheckDate
+                    };
+
+                    const { error } = await supabase
+                        .from('email_config')
+                        .upsert(configForDb, { onConflict: 'id' });
+
+                    if (error) throw error;
+
+                    setSyncStatus('✅ Synced');
+                    setTimeout(() => setSyncStatus(''), 2000);
+                } catch (error) {
+                    console.error('Save config error:', error);
                     setSyncStatus('❌ Sync failed');
                     setTimeout(() => setSyncStatus(''), 3000);
                 }
@@ -263,7 +360,7 @@
                 if (newEmail && newEmail.includes('@')) {
                     const updated = { ...emailConfig, emails: [...emailConfig.emails, newEmail] };
                     setEmailConfig(updated);
-                    saveData(items, updated);
+                    saveConfigToSupabase(updated);
                     setNewEmail('');
                 } else {
                     alert('Please enter a valid email address');
@@ -273,7 +370,7 @@
             const removeEmail = (emailToRemove) => {
                 const updated = { ...emailConfig, emails: emailConfig.emails.filter(e => e !== emailToRemove) };
                 setEmailConfig(updated);
-                saveData(items, updated);
+                saveConfigToSupabase(updated);
             };
 
             const addItem = () => {
@@ -286,7 +383,7 @@
                         lastEmailSent: null
                     }];
                     setItems(updatedItems);
-                    saveData(updatedItems, emailConfig);
+                    saveItemsToSupabase(updatedItems);
                     setNewItem({ name: '', expiryDate: '', category: '', quantity: 1 });
                 }
             };
@@ -300,13 +397,13 @@
                     return item;
                 });
                 setItems(updatedItems);
-                saveData(updatedItems, emailConfig);
+                saveItemsToSupabase(updatedItems);
             };
 
             const deleteItem = (id) => {
                 const updatedItems = items.filter(item => item.id !== id);
                 setItems(updatedItems);
-                saveData(updatedItems, emailConfig);
+                saveItemsToSupabase(updatedItems);
             };
 
             const handleExcelUpload = (e) => {
@@ -332,7 +429,7 @@
 
                         const updatedItems = [...items, ...importedItems];
                         setItems(updatedItems);
-                        saveData(updatedItems, emailConfig);
+                        saveItemsToSupabase(updatedItems);
                         alert(`Imported ${importedItems.length} items successfully!`);
                     };
                     reader.readAsArrayBuffer(file);
@@ -376,7 +473,7 @@
             const updateEmailConfig = (field, value) => {
                 const updated = { ...emailConfig, [field]: value };
                 setEmailConfig(updated);
-                saveData(items, updated);
+                saveConfigToSupabase(updated);
             };
 
             const shouldSendEmailForItem = (item) => {
@@ -416,7 +513,7 @@
                 if (itemsToEmail.length === 0) {
                     const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
                     setEmailConfig(updated);
-                    saveData(items, updated);
+                    saveConfigToSupabase(updated);
                     return;
                 }
 
@@ -463,12 +560,12 @@
                             i.id === item.id ? { ...i, lastEmailSent: now.toISOString() } : i
                         );
                         setItems(updatedItems);
-                        await saveData(updatedItems, emailConfig);
+                        await saveItemsToSupabase(updatedItems);
                     }
 
                     const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
                     setEmailConfig(updated);
-                    await saveData(items, updated);
+                    await saveConfigToSupabase(updated);
 
                 } catch (error) {
                     console.error('Automated email error:', error);
@@ -541,7 +638,7 @@
                                     <Calendar />
                                     Inventory Expiry Tracker
                                 </h1>
-                                <p className="text-gray-600">Automated weekly email alerts • {syncStatus || 'Cloud synced'}</p>
+                                <p className="text-gray-600">Automated weekly email alerts • {syncStatus || 'Cloud synced via Supabase'}</p>
                             </div>
                             <button
                                 onClick={handleLogout}
@@ -561,10 +658,20 @@
 
                         <div className="grid md:grid-cols-2 gap-6 mb-6">
                             <div className="bg-white rounded-lg shadow-lg p-6">
-                                <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-                                    <Mail />
-                                    Email Alert Settings
-                                </h2>
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-xl font-semibold flex items-center gap-2">
+                                        <Mail />
+                                        Email Alert Settings
+                                    </h2>
+                                    {setupComplete && (
+                                        <button
+                                            onClick={() => setShowConfig(!showConfig)}
+                                            className="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded-md transition"
+                                        >
+                                            {showConfig ? 'Hide Config' : 'Show Config'}
+                                        </button>
+                                    )}
+                                </div>
                                 <div className="space-y-4">
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-2">Email Recipients ({emailConfig.emails.length})</label>
@@ -599,65 +706,69 @@
                                         </div>
                                     </div>
 
-                                    <div className="border-t pt-4">
-                                        <h3 className="font-semibold text-sm text-gray-700 mb-2">EmailJS Configuration</h3>
-                                        <div className="space-y-2">
-                                            <input
-                                                type="text"
-                                                value={emailConfig.publicKey}
-                                                onChange={(e) => updateEmailConfig('publicKey', e.target.value)}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                                                placeholder="Public Key"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={emailConfig.serviceId}
-                                                onChange={(e) => updateEmailConfig('serviceId', e.target.value)}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                                                placeholder="Service ID"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={emailConfig.templateId}
-                                                onChange={(e) => updateEmailConfig('templateId', e.target.value)}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                                                placeholder="Template ID"
-                                            />
-                                        </div>
-                                    </div>
+                                    {(showConfig || !setupComplete) && (
+                                        <>
+                                            <div className="border-t pt-4">
+                                                <h3 className="font-semibold text-sm text-gray-700 mb-2">EmailJS Configuration</h3>
+                                                <div className="space-y-2">
+                                                    <input
+                                                        type="text"
+                                                        value={emailConfig.publicKey}
+                                                        onChange={(e) => updateEmailConfig('publicKey', e.target.value)}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                                                        placeholder="Public Key"
+                                                    />
+                                                    <input
+                                                        type="text"
+                                                        value={emailConfig.serviceId}
+                                                        onChange={(e) => updateEmailConfig('serviceId', e.target.value)}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                                                        placeholder="Service ID"
+                                                    />
+                                                    <input
+                                                        type="text"
+                                                        value={emailConfig.templateId}
+                                                        onChange={(e) => updateEmailConfig('templateId', e.target.value)}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                                                        placeholder="Template ID"
+                                                    />
+                                                </div>
+                                            </div>
 
-                                    <div className="grid grid-cols-3 gap-3 border-t pt-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Months</label>
-                                            <input
-                                                type="number"
-                                                value={emailConfig.monthsBefore}
-                                                onChange={(e) => updateEmailConfig('monthsBefore', parseInt(e.target.value))}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                                min="0"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Weeks</label>
-                                            <input
-                                                type="number"
-                                                value={emailConfig.weeksBefore}
-                                                onChange={(e) => updateEmailConfig('weeksBefore', parseInt(e.target.value))}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                                min="0"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Days</label>
-                                            <input
-                                                type="number"
-                                                value={emailConfig.daysBefore}
-                                                onChange={(e) => updateEmailConfig('daysBefore', parseInt(e.target.value))}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                                                min="0"
-                                            />
-                                        </div>
-                                    </div>
+                                            <div className="grid grid-cols-3 gap-3 border-t pt-4">
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-700 mb-1">Months</label>
+                                                    <input
+                                                        type="number"
+                                                        value={emailConfig.monthsBefore}
+                                                        onChange={(e) => updateEmailConfig('monthsBefore', parseInt(e.target.value))}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                                        min="0"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-700 mb-1">Weeks</label>
+                                                    <input
+                                                        type="number"
+                                                        value={emailConfig.weeksBefore}
+                                                        onChange={(e) => updateEmailConfig('weeksBefore', parseInt(e.target.value))}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                                        min="0"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-700 mb-1">Days</label>
+                                                    <input
+                                                        type="number"
+                                                        value={emailConfig.daysBefore}
+                                                        onChange={(e) => updateEmailConfig('daysBefore', parseInt(e.target.value))}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                                        min="0"
+                                                    />
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
 
                                     <div className="border-t pt-4">
                                         <label className="flex items-center gap-2 cursor-pointer">
