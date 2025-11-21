@@ -19,8 +19,8 @@
         const { useState, useEffect } = React;
 
         // Supabase Configuration - REPLACE WITH YOUR OWN VALUES
-        const SUPABASE_URL = 'https://vuwyvwldidjibitrmnje.supabase.co';
-        const SUPABASE_ANON_KEY = 'sb_publishable_3bB0s-3OQYHDz346IUnXVA_IXUSe9VN';
+        const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+        const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
         const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         // Icons
@@ -179,7 +179,7 @@
             const [items, setItems] = useState([]);
             const [emailConfig, setEmailConfig] = useState({
                 emails: [],
-                monthsBefore: 1,
+                monthsBefore: 6,
                 weeksBefore: 2,
                 daysBefore: 7,
                 publicKey: '',
@@ -496,29 +496,53 @@
             };
 
             const checkAndSendAutomatedEmails = async () => {
-                if (!emailConfig.automationEnabled || !setupComplete || emailConfig.emails.length === 0) {
-                    return;
-                }
-
-                const now = new Date();
-                const lastCheck = emailConfig.lastCheckDate ? new Date(emailConfig.lastCheckDate) : null;
-                const hoursSinceCheck = lastCheck ? (now - lastCheck) / (1000 * 60 * 60) : 999;
-
-                if (hoursSinceCheck < 24) {
-                    return;
-                }
-
-                const itemsToEmail = items.filter(item => shouldSendEmailForItem(item));
-
-                if (itemsToEmail.length === 0) {
-                    const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
-                    setEmailConfig(updated);
-                    saveConfigToSupabase(updated);
-                    return;
-                }
-
+                // Reload fresh config from Supabase to get latest email list
                 try {
-                    emailjs.init(emailConfig.publicKey);
+                    const { data: configData } = await supabase
+                        .from('email_config')
+                        .select('*')
+                        .eq('id', 1)
+                        .single();
+
+                    if (!configData || !configData.automation_enabled || !configData.emails || configData.emails.length === 0) {
+                        return;
+                    }
+
+                    const freshConfig = {
+                        emails: configData.emails || [],
+                        monthsBefore: configData.months_before || 6,
+                        weeksBefore: configData.weeks_before || 2,
+                        daysBefore: configData.days_before || 7,
+                        publicKey: configData.public_key || '',
+                        serviceId: configData.service_id || '',
+                        templateId: configData.template_id || '',
+                        automationEnabled: configData.automation_enabled || false,
+                        lastCheckDate: configData.last_check_date
+                    };
+
+                    if (!freshConfig.publicKey || !freshConfig.serviceId || !freshConfig.templateId) {
+                        return;
+                    }
+
+                    const now = new Date();
+                    const lastCheck = freshConfig.lastCheckDate ? new Date(freshConfig.lastCheckDate) : null;
+                    const hoursSinceCheck = lastCheck ? (now - lastCheck) / (1000 * 60 * 60) : 999;
+
+                    if (hoursSinceCheck < 24) {
+                        return;
+                    }
+
+                    const itemsToEmail = items.filter(item => shouldSendEmailForItem(item));
+
+                    if (itemsToEmail.length === 0) {
+                        await supabase
+                            .from('email_config')
+                            .update({ last_check_date: now.toISOString() })
+                            .eq('id', 1);
+                        return;
+                    }
+
+                    emailjs.init(freshConfig.publicKey);
 
                     for (const item of itemsToEmail) {
                         const daysUntil = getDaysUntilExpiry(item.expiryDate);
@@ -544,11 +568,12 @@
                             alert_date: new Date().toLocaleDateString()
                         };
 
-                        for (const email of emailConfig.emails) {
+                        // Use fresh email list from database
+                        for (const email of freshConfig.emails) {
                             try {
                                 await emailjs.send(
-                                    emailConfig.serviceId,
-                                    emailConfig.templateId,
+                                    freshConfig.serviceId,
+                                    freshConfig.templateId,
                                     { ...templateParams, to_email: email }
                                 );
                             } catch (error) {
@@ -563,9 +588,10 @@
                         await saveItemsToSupabase(updatedItems);
                     }
 
-                    const updated = { ...emailConfig, lastCheckDate: now.toISOString() };
-                    setEmailConfig(updated);
-                    await saveConfigToSupabase(updated);
+                    await supabase
+                        .from('email_config')
+                        .update({ last_check_date: now.toISOString() })
+                        .eq('id', 1);
 
                 } catch (error) {
                     console.error('Automated email error:', error);
