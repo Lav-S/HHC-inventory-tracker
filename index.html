@@ -188,6 +188,7 @@
             const [emailStatus, setEmailStatus] = useState('');
             const [setupComplete, setSetupComplete] = useState(false);
             const [syncStatus, setSyncStatus] = useState('');
+            const [showConfig, setShowConfig] = useState(false);
 
             useEffect(() => {
                 const loggedIn = localStorage.getItem('isLoggedIn');
